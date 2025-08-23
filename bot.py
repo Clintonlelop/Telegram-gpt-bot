@@ -1,17 +1,14 @@
 import os
 import time
 import json
-import openai
+import requests
 from telegram import Update, ChatAction
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
 # Load environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+GROQ_API_KEY = os.environ.get('OPENAI_API_KEY')  # Still use OPENAI_API_KEY name for compatibility
 OWNER_ID = int(os.environ.get('OWNER_ID', 0))
-
-# Initialize OpenAI
-openai.api_key = OPENAI_API_KEY
 
 # File paths
 CHAT_MEMORY_FILE = 'chat_memory.json'
@@ -55,7 +52,7 @@ Keep responses relatively concise but engaging.
 Don't be afraid to be a little sassy or make dark humor references, but keep it appropriate."""
 
 def get_gpt_response(user_id, message):
-    """Get response from OpenAI GPT-3.5-turbo"""
+    """Get response from Groq API (free alternative to OpenAI)"""
     # Get or create user's chat history
     if user_id not in chat_memory:
         chat_memory[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -68,14 +65,28 @@ def get_gpt_response(user_id, message):
         chat_memory[user_id] = [chat_memory[user_id][0]] + chat_memory[user_id][-10:]
     
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=chat_memory[user_id],
-            max_tokens=500,
-            temperature=0.8
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "messages": chat_memory[user_id],
+            "model": "llama-3.1-70b-versatile",  # Free Groq model
+            "temperature": 0.8,
+            "max_tokens": 500,
+            "stream": False
+        }
+        
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=30
         )
         
-        assistant_reply = response.choices[0].message['content'].strip()
+        response.raise_for_status()
+        assistant_reply = response.json()["choices"][0]["message"]["content"].strip()
         
         # Add assistant response to history
         chat_memory[user_id].append({"role": "assistant", "content": assistant_reply})
@@ -148,7 +159,7 @@ def handle_message(update: Update, context: CallbackContext):
     # Simulate human typing delay (1-2 seconds)
     time.sleep(1 + (user_id % 2))  # Varies per user for more natural feel
     
-    # Get GPT response
+    # Get Groq response
     response = get_gpt_response(user_id, message)
     
     # Save updated chat memory
@@ -185,7 +196,7 @@ def main():
     dp.add_error_handler(error_handler)
     
     # Start the Bot
-    print("Bot is starting...")
+    print("Bot is starting with Groq API...")
     updater.start_polling()
     
     # Run the bot until you press Ctrl-C
