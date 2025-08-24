@@ -7,7 +7,7 @@ from huggingface_hub import InferenceClient
 
 # --- ENV VARIABLES ---
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-HF_TOKEN = os.environ.get('HF_TOKEN')  # your Hugging Face token
+HF_TOKEN = os.environ.get('HF_TOKEN')  # Hugging Face token
 OWNER_ID = int(os.environ.get('OWNER_ID', 0))
 
 # --- FILE PATHS ---
@@ -50,20 +50,22 @@ You're sarcastic but friendly, and you enjoy making clever, slightly edgy jokes.
 You remember previous conversations and build upon them. 
 Keep responses concise, engaging, and slightly sassy."""
 
-# --- HF RESPONSE ---
+# --- HUGGING FACE RESPONSE ---
 def get_hf_response(user_id, message):
     if user_id not in chat_memory:
         chat_memory[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    
     chat_memory[user_id].append({"role": "user", "content": message})
-
+    
     if len(chat_memory[user_id]) > 11:
         chat_memory[user_id] = [chat_memory[user_id][0]] + chat_memory[user_id][-10:]
-
+    
     prompt = "\n".join([m['content'] for m in chat_memory[user_id]])
+    
     try:
         output = client.text_generation(
-            model="mosaicml/mpt-7b-instruct",  # API model
-            inputs=prompt,
+            prompt,  # pass text directly
+            model="mosaicml/mpt-7b-instruct",
             max_new_tokens=200,
             temperature=0.8
         )
