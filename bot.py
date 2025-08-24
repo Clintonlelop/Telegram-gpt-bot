@@ -5,46 +5,65 @@ import requests
 from telegram import Update, ChatAction
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-# Environment variables
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-HF_API_KEY = os.environ.get("HF_API_KEY")
-OWNER_ID = int(os.environ.get("OWNER_ID", 0))
+# Load environment variables
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+HF_API_KEY = os.environ.get('HF_API_KEY')   # Hugging Face key
+OWNER_ID = int(os.environ.get('OWNER_ID', 0))
 
-# File storage
-CHAT_MEMORY_FILE = "chat_memory.json"
-USER_IDS_FILE = "user_ids.json"
+# File paths
+CHAT_MEMORY_FILE = 'chat_memory.json'
+USER_IDS_FILE = 'user_ids.json'
 
-def load_json(file, default):
+# Load chat memory
+def load_chat_memory():
     try:
-        with open(file, "r") as f:
+        with open(CHAT_MEMORY_FILE, 'r') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return default
+        return {}
 
-def save_json(file, data):
-    with open(file, "w") as f:
-        json.dump(data, f, indent=2)
+# Load user IDs
+def load_user_ids():
+    try:
+        with open(USER_IDS_FILE, 'r') as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
 
-chat_memory = load_json(CHAT_MEMORY_FILE, {})
-user_ids = set(load_json(USER_IDS_FILE, []))
+# Save chat memory
+def save_chat_memory():
+    with open(CHAT_MEMORY_FILE, 'w') as f:
+        json.dump(chat_memory, f, indent=2)
 
-SYSTEM_PROMPT = """You are a witty, casual chatbot with a slightly dark sense of humor.
-You're sarcastic but friendly, you enjoy clever edgy jokes, but keep it appropriate."""
+# Save user IDs
+def save_user_ids():
+    with open(USER_IDS_FILE, 'w') as f:
+        json.dump(list(user_ids), f)
+
+# Initialize memory
+chat_memory = load_chat_memory()
+user_ids = load_user_ids()
+
+# Personality
+SYSTEM_PROMPT = """You are a witty, casual chatbot with a slightly dark sense of humor. 
+You're sarcastic but friendly, and you enjoy making clever, slightly edgy jokes. 
+You remember previous conversations and build upon them. 
+Keep responses relatively concise but engaging. 
+Don't be afraid to be a little sassy or make dark humor references, but keep it appropriate."""
 
 def get_gpt_response(user_id, message):
+    """Get response from Hugging Face API"""
     if user_id not in chat_memory:
         chat_memory[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    
     chat_memory[user_id].append({"role": "user", "content": message})
 
     if len(chat_memory[user_id]) > 11:
         chat_memory[user_id] = [chat_memory[user_id][0]] + chat_memory[user_id][-10:]
-
+    
     try:
         headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-        payload = {
-            "inputs": chat_memory[user_id],
-            "parameters": {"max_new_tokens": 300, "temperature": 0.8}
-        }
+        payload = {"inputs": message}
 
         response = requests.post(
             "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3",
@@ -53,63 +72,98 @@ def get_gpt_response(user_id, message):
             timeout=60
         )
 
-        data = response.json()
-        if "error" in data:
-            return f"Oops, Hugging Face broke again 🗿🍷 Error: {data['error']}"
+        # Debug logs
+        print("Status:", response.status_code)
+        print("Raw response:", response.text)
 
-        assistant_reply = data[0]["generated_text"].strip()
+        if response.status_code == 503:
+            return "Model is waking up 💤, give me a few seconds and try again 🗿🍷"
+
+        response.raise_for_status()
+        result = response.json()
+
+        # Hugging Face returns list with dict
+        assistant_reply = result[0]["generated_text"]
         chat_memory[user_id].append({"role": "assistant", "content": assistant_reply})
-        return assistant_reply
 
+        return assistant_reply
+    
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Oops, Hugging Face broke again 🗿🍷 Error: {str(e)}"
 
 def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     user_ids.add(user_id)
-    save_json(USER_IDS_FILE, list(user_ids))
+    save_user_ids()
+
     greetings = [
-        "Yo, another human joins the chaos. What's up?",
-        "Ah, company at last. Tell me something funny.",
-        "Greetings mortal, I promise to only roast you a little 🗿🍷"
+        "Well hello there! I was just contemplating the meaninglessness of existence. What's on your mind?",
+        "Hey! I was getting bored waiting for someone to talk to. What trouble shall we get into today?",
+        "Greetings, mortal! Ready to have your mind mildly amused and slightly disturbed?",
+        "Oh look, another human. Just kidding! Welcome! I promise I only bite metaphorically.",
+        "Hello! I was starting to think everyone forgot about me. Not that I'd care... much."
     ]
-    update.message.reply_text(greetings[user_id % len(greetings)])
+
+    greeting = greetings[user_id % len(greetings)]
+    update.message.reply_text(greeting)
 
 def broadcast(update: Update, context: CallbackContext):
-    if update.effective_user.id != OWNER_ID:
-        update.message.reply_text("Not today, boss wannabe. ✋")
+    user_id = update.effective_user.id
+    if user_id != OWNER_ID:
+        update.message.reply_text("Nice try, but you're not the boss of me. ✋")
         return
+    
     if not context.args:
         update.message.reply_text("Usage: /broadcast Your message here")
         return
+    
     message = " ".join(context.args)
+    success_count = 0
+    failure_count = 0
+    
     for uid in user_ids:
         try:
-            context.bot.send_message(chat_id=uid, text=f"📢 Broadcast:\n{message}")
+            context.bot.send_message(chat_id=uid, text=f"📢 Broadcast from admin:\n\n{message}")
+            success_count += 1
             time.sleep(0.1)
-        except:
-            pass
+        except Exception as e:
+            print(f"Failed to send to {uid}: {e}")
+            failure_count += 1
+    
+    update.message.reply_text(f"Broadcast done!\n✅ {success_count} users\n❌ {failure_count} failed")
 
 def handle_message(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    msg = update.message.text
+    message = update.message.text
     user_ids.add(user_id)
-    save_json(USER_IDS_FILE, list(user_ids))
+    save_user_ids()
+
     update.message.chat.send_action(action=ChatAction.TYPING)
-    time.sleep(1)
-    reply = get_gpt_response(user_id, msg)
-    save_json(CHAT_MEMORY_FILE, chat_memory)
-    update.message.reply_text(reply)
+    time.sleep(1 + (user_id % 2))
+
+    response = get_gpt_response(user_id, message)
+    save_chat_memory()
+    update.message.reply_text(response)
+
+def error_handler(update: Update, context: CallbackContext):
+    print(f"Update {update} caused error {context.error}")
+    if update and update.effective_message:
+        update.effective_message.reply_text("Well this is awkward... my brain glitched out 🤯")
 
 def main():
     updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
+
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("broadcast", broadcast))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    print("Bot is alive 🚀")
+    dp.add_error_handler(error_handler)
+
+    print("Bot is starting with Hugging Face API...")
     updater.start_polling()
     updater.idle()
+    save_chat_memory()
+    save_user_ids()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
