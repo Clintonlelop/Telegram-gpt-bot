@@ -66,7 +66,7 @@ def get_gpt_response(user_id, message):
         payload = {"inputs": message}
 
         response = requests.post(
-            "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3",
+            "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta" ,
             headers=headers,
             json=payload,
             timeout=60
