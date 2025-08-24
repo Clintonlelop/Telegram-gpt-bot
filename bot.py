@@ -5,55 +5,52 @@ from telegram import Update, ChatAction
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 from huggingface_hub import InferenceClient
 
-# Load environment variables
+# --- ENV VARIABLES ---
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-HF_TOKEN = os.environ.get('HF_TOKEN')  # Hugging Face token
+HF_TOKEN = os.environ.get('HF_TOKEN')  # your Hugging Face token
 OWNER_ID = int(os.environ.get('OWNER_ID', 0))
 
-# File paths
+# --- FILE PATHS ---
 CHAT_MEMORY_FILE = 'chat_memory.json'
 USER_IDS_FILE = 'user_ids.json'
 
-# Initialize Hugging Face client
+# --- INIT HF CLIENT ---
 client = InferenceClient(HF_TOKEN)
 
-# Load chat memory
+# --- LOAD/ SAVE FUNCTIONS ---
 def load_chat_memory():
     try:
         with open(CHAT_MEMORY_FILE, 'r') as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except:
         return {}
 
-# Load user IDs
 def load_user_ids():
     try:
         with open(USER_IDS_FILE, 'r') as f:
             return set(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except:
         return set()
 
-# Save chat memory
 def save_chat_memory():
     with open(CHAT_MEMORY_FILE, 'w') as f:
         json.dump(chat_memory, f, indent=2)
 
-# Save user IDs
 def save_user_ids():
     with open(USER_IDS_FILE, 'w') as f:
         json.dump(list(user_ids), f)
 
-# Initialize data structures
+# --- INIT DATA ---
 chat_memory = load_chat_memory()
 user_ids = load_user_ids()
 
-# Bot personality system prompt
+# --- SYSTEM PROMPT ---
 SYSTEM_PROMPT = """You are a witty, casual chatbot with a slightly dark sense of humor. 
 You're sarcastic but friendly, and you enjoy making clever, slightly edgy jokes. 
 You remember previous conversations and build upon them. 
 Keep responses concise, engaging, and slightly sassy."""
 
-# Hugging Face response function
+# --- HF RESPONSE ---
 def get_hf_response(user_id, message):
     if user_id not in chat_memory:
         chat_memory[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -65,7 +62,7 @@ def get_hf_response(user_id, message):
     prompt = "\n".join([m['content'] for m in chat_memory[user_id]])
     try:
         output = client.text_generation(
-            model="mosaicml/mpt-7b-instruct",
+            model="mosaicml/mpt-7b-instruct",  # API model
             inputs=prompt,
             max_new_tokens=200,
             temperature=0.8
@@ -76,7 +73,7 @@ def get_hf_response(user_id, message):
     except Exception as e:
         return f"Oops, Hugging Face error: {str(e)}"
 
-# /start command
+# --- /start COMMAND ---
 def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     user_ids.add(user_id)
@@ -88,10 +85,9 @@ def start(update: Update, context: CallbackContext):
         "Oh look, another human. Just kidding! Welcome! I promise I only bite metaphorically.",
         "Hello! I was starting to think everyone forgot about me. Not that I'd care... much."
     ]
-    greeting = greetings[user_id % len(greetings)]
-    update.message.reply_text(greeting)
+    update.message.reply_text(greetings[user_id % len(greetings)])
 
-# /broadcast command (owner only)
+# --- /broadcast COMMAND ---
 def broadcast(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     if user_id != OWNER_ID:
@@ -111,7 +107,7 @@ def broadcast(update: Update, context: CallbackContext):
             fail += 1
     update.message.reply_text(f"Broadcast completed!\n✅ Success: {success}\n❌ Failed: {fail}")
 
-# Handle incoming messages
+# --- HANDLE MESSAGES ---
 def handle_message(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     message = update.message.text
@@ -123,13 +119,13 @@ def handle_message(update: Update, context: CallbackContext):
     save_chat_memory()
     update.message.reply_text(response)
 
-# Error handler
+# --- ERROR HANDLER ---
 def error_handler(update: Update, context: CallbackContext):
     print(f"Update {update} caused error {context.error}")
     if update and update.effective_message:
         update.effective_message.reply_text("Oops, bot malfunctioned. Try again later.")
 
-# Main function
+# --- MAIN ---
 def main():
     updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -137,7 +133,7 @@ def main():
     dp.add_handler(CommandHandler("broadcast", broadcast))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     dp.add_error_handler(error_handler)
-    print("Bot is starting on Heroku with Hugging Face...")
+    print("Bot is starting on Heroku with Hugging Face API...")
     updater.start_polling()
     updater.idle()
     save_chat_memory()
