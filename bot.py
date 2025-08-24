@@ -1,169 +1,220 @@
 import os
-import time
-import json
+import logging
 import requests
-from telegram import Update, ChatAction
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from dotenv import load_dotenv
 
 # Load environment variables
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-HF_API_KEY = os.environ.get('HF_API_KEY')   # Hugging Face key
-OWNER_ID = int(os.environ.get('OWNER_ID', 0))
+load_dotenv()
 
-# File paths
-CHAT_MEMORY_FILE = 'chat_memory.json'
-USER_IDS_FILE = 'user_ids.json'
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Load chat memory
-def load_chat_memory():
-    try:
-        with open(CHAT_MEMORY_FILE, 'r') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+# Configuration
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+HUGGINGFACE_TOKEN = os.getenv('HUGGINGFACE_API_TOKEN')
 
-# Load user IDs
-def load_user_ids():
-    try:
-        with open(USER_IDS_FILE, 'r') as f:
-            return set(json.load(f))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return set()
+# Hugging Face API endpoints
+HUGGINGFACE_APIS = {
+    'text_generation': 'https://api-inference.huggingface.co/models/gpt2',
+    'text_classification': 'https://api-inference.huggingface.co/models/distilbert-base-uncased-finetuned-sst-2-english',
+    'summarization': 'https://api-inference.huggingface.co/models/facebook/bart-large-cnn',
+    'translation': 'https://api-inference.huggingface.co/models/Helsinki-NLP/opus-mt-en-fr',
+    'sentiment_analysis': 'https://api-inference.huggingface.co/models/cardiffnlp/twitter-roberta-base-sentiment-latest'
+}
 
-# Save chat memory
-def save_chat_memory():
-    with open(CHAT_MEMORY_FILE, 'w') as f:
-        json.dump(chat_memory, f, indent=2)
-
-# Save user IDs
-def save_user_ids():
-    with open(USER_IDS_FILE, 'w') as f:
-        json.dump(list(user_ids), f)
-
-# Initialize memory
-chat_memory = load_chat_memory()
-user_ids = load_user_ids()
-
-# Personality
-SYSTEM_PROMPT = """You are a witty, casual chatbot with a slightly dark sense of humor. 
-You're sarcastic but friendly, and you enjoy making clever, slightly edgy jokes. 
-You remember previous conversations and build upon them. 
-Keep responses relatively concise but engaging. 
-Don't be afraid to be a little sassy or make dark humor references, but keep it appropriate."""
-
-def get_gpt_response(user_id, message):
-    """Get response from Hugging Face API"""
-    if user_id not in chat_memory:
-        chat_memory[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+class HuggingFaceBot:
+    def __init__(self):
+        self.current_api = 'text_generation'
+        self.headers = {
+            'Authorization': f'Bearer {HUGGINGFACE_TOKEN}'
+        }
     
-    chat_memory[user_id].append({"role": "user", "content": message})
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send welcome message and show available commands"""
+        welcome_text = """
+🤖 *Welcome to Hugging Face Bot!*
 
-    if len(chat_memory[user_id]) > 11:
-        chat_memory[user_id] = [chat_memory[user_id][0]] + chat_memory[user_id][-10:]
+I can help you interact with various Hugging Face AI models.
+
+*Available Commands:*
+/start - Show this welcome message
+/help - Show help information
+/models - Show available AI models
+/current - Show current active model
+/search - Search for models (coming soon)
+/switch - Switch between different AI models
+
+Just send me text and I'll process it with the current active model!
+        """
+        await update.message.reply_text(welcome_text, parse_mode='Markdown')
     
-    try:
-        headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-        payload = {"inputs": message}
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show help information"""
+        help_text = """
+📖 *Help Guide*
 
-        response = requests.post(
-            "https://api-inference.huggingface.co/models/google/flan-t5-large",
-            headers=headers,
-            json=payload,
-            timeout=60
+*Available Models:*
+• Text Generation (GPT-2)
+• Text Classification
+• Summarization
+• Translation (EN→FR)
+• Sentiment Analysis
+
+*How to use:*
+1. Use /models to see available models
+2. Use /switch to change models
+3. Use /current to check current model
+4. Send text to process with current model
+
+*Example:* Send "Hello, how are you?" for text generation
+        """
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+    
+    async def show_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show available models with inline keyboard"""
+        keyboard = [
+            [InlineKeyboardButton("📝 Text Generation", callback_data='text_generation')],
+            [InlineKeyboardButton("🏷️ Text Classification", callback_data='text_classification')],
+            [InlineKeyboardButton("📋 Summarization", callback_data='summarization')],
+            [InlineKeyboardButton("🌐 Translation", callback_data='translation')],
+            [InlineKeyboardButton("😊 Sentiment Analysis", callback_data='sentiment_analysis')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            '🤖 *Available Models:*\n\nChoose a model to switch to:',
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-
-        # Debug logs
-        print("Status:", response.status_code)
-        print("Raw response:", response.text)
-
-        if response.status_code == 503:
-            return "Model is waking up 💤, give me a few seconds and try again 🗿🍷"
-
-        response.raise_for_status()
-        result = response.json()
-
-        # Hugging Face returns list with dict
-        assistant_reply = result[0]["generated_text"]
-        chat_memory[user_id].append({"role": "assistant", "content": assistant_reply})
-
-        return assistant_reply
     
-    except Exception as e:
-        return f"Oops, Hugging Face broke again 🗿🍷 Error: {str(e)}"
-
-def start(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    user_ids.add(user_id)
-    save_user_ids()
-
-    greetings = [
-        "Well hello there! I was just contemplating the meaninglessness of existence. What's on your mind?",
-        "Hey! I was getting bored waiting for someone to talk to. What trouble shall we get into today?",
-        "Greetings, mortal! Ready to have your mind mildly amused and slightly disturbed?",
-        "Oh look, another human. Just kidding! Welcome! I promise I only bite metaphorically.",
-        "Hello! I was starting to think everyone forgot about me. Not that I'd care... much."
-    ]
-
-    greeting = greetings[user_id % len(greetings)]
-    update.message.reply_text(greeting)
-
-def broadcast(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if user_id != OWNER_ID:
-        update.message.reply_text("Nice try, but you're not the boss of me. ✋")
-        return
+    async def switch_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Switch model command"""
+        await self.show_models(update, context)
     
-    if not context.args:
-        update.message.reply_text("Usage: /broadcast Your message here")
-        return
+    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline keyboard button presses"""
+        query = update.callback_query
+        await query.answer()
+        
+        model_key = query.data
+        if model_key in HUGGINGFACE_APIS:
+            self.current_api = model_key
+            model_name = model_key.replace('_', ' ').title()
+            await query.edit_message_text(
+                f"✅ Switched to *{model_name}* model!",
+                parse_mode='Markdown'
+            )
+        else:
+            await query.edit_message_text("❌ Invalid model selection!")
     
-    message = " ".join(context.args)
-    success_count = 0
-    failure_count = 0
+    async def show_current_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show currently active model"""
+        model_name = self.current_api.replace('_', ' ').title()
+        await update.message.reply_text(
+            f"🔧 *Current Active Model:*\n{model_name}",
+            parse_mode='Markdown'
+        )
     
-    for uid in user_ids:
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text messages and process with Hugging Face API"""
+        user_text = update.message.text
+        
+        if not user_text.strip():
+            await update.message.reply_text("Please send some text to process!")
+            return
+        
+        # Show typing action
+        await update.message.chat.send_action(action="typing")
+        
         try:
-            context.bot.send_message(chat_id=uid, text=f"📢 Broadcast from admin:\n\n{message}")
-            success_count += 1
-            time.sleep(0.1)
+            # Call Hugging Face API
+            response = self.call_huggingface_api(user_text)
+            
+            if response:
+                await update.message.reply_text(response)
+            else:
+                await update.message.reply_text("❌ Sorry, I couldn't process your request. The API might be loading or unavailable.")
+        
         except Exception as e:
-            print(f"Failed to send to {uid}: {e}")
-            failure_count += 1
+            logger.error(f"Error calling Hugging Face API: {e}")
+            await update.message.reply_text("❌ Sorry, there was an error processing your request. Please try again later.")
     
-    update.message.reply_text(f"Broadcast done!\n✅ {success_count} users\n❌ {failure_count} failed")
-
-def handle_message(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    message = update.message.text
-    user_ids.add(user_id)
-    save_user_ids()
-
-    update.message.chat.send_action(action=ChatAction.TYPING)
-    time.sleep(1 + (user_id % 2))
-
-    response = get_gpt_response(user_id, message)
-    save_chat_memory()
-    update.message.reply_text(response)
-
-def error_handler(update: Update, context: CallbackContext):
-    print(f"Update {update} caused error {context.error}")
-    if update and update.effective_message:
-        update.effective_message.reply_text("Well this is awkward... my brain glitched out 🤯")
+    def call_huggingface_api(self, text: str) -> str:
+        """Call the appropriate Hugging Face API based on current selection"""
+        api_url = HUGGINGFACE_APIS[self.current_api]
+        
+        payload = {"inputs": text}
+        
+        try:
+            response = requests.post(
+                api_url,
+                headers=self.headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return self.format_response(response.json())
+            elif response.status_code == 503:
+                return "⚠️ Model is currently loading. Please try again in a few seconds."
+            else:
+                logger.error(f"API Error: {response.status_code} - {response.text}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            return "⏰ Request timed out. Please try again."
+        except Exception as e:
+            logger.error(f"Request error: {e}")
+            return None
+    
+    def format_response(self, api_response) -> str:
+        """Format the API response based on the model type"""
+        if self.current_api == 'text_generation':
+            return api_response[0]['generated_text']
+        elif self.current_api == 'text_classification':
+            label = api_response[0]['label']
+            score = api_response[0]['score']
+            return f"Label: {label}\nConfidence: {score:.2%}"
+        elif self.current_api == 'summarization':
+            return api_response[0]['summary_text']
+        elif self.current_api == 'translation':
+            return api_response[0]['translation_text']
+        elif self.current_api == 'sentiment_analysis':
+            best = max(api_response[0], key=lambda x: x['score'])
+            return f"Sentiment: {best['label']}\nConfidence: {best['score']:.2%}"
+        else:
+            return str(api_response)
 
 def main():
-    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("broadcast", broadcast))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    dp.add_error_handler(error_handler)
-
-    print("Bot is starting with Hugging Face API...")
-    updater.start_polling()
-    updater.idle()
-    save_chat_memory()
-    save_user_ids()
+    """Start the bot"""
+    if not TELEGRAM_TOKEN or not HUGGINGFACE_TOKEN:
+        logger.error("Please set TELEGRAM_BOT_TOKEN and HUGGINGFACE_API_TOKEN environment variables")
+        return
+    
+    # Create bot instance
+    bot = HuggingFaceBot()
+    
+    # Create application
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Add handlers
+    application.add_handler(CommandHandler("start", bot.start))
+    application.add_handler(CommandHandler("help", bot.help_command))
+    application.add_handler(CommandHandler("models", bot.show_models))
+    application.add_handler(CommandHandler("switch", bot.switch_model))
+    application.add_handler(CommandHandler("current", bot.show_current_model))
+    application.add_handler(CallbackQueryHandler(bot.button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+    
+    # Start the Bot
+    logger.info("Bot is starting...")
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
